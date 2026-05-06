@@ -5,7 +5,7 @@
 Repository URL: https://github.com/johncheungmk/LAMP-KV
 
 Author: John Cheung  
-Affiliation: College of Professional and Continued Education
+Affiliation: College of Professional and Continuing Education
 
 This repository contains the paper source and the supplementary testing program for peer review.
 
