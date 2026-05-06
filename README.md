@@ -2,10 +2,12 @@
 
 **LAMP-KV: Memory-Pressure-Aware Mixed-Precision KV-Cache Compression for Memory-Constrained LLM Inference**
 
+Repository URL: https://github.com/johncheungmk/LAMP-KV
+
 Author: John Cheung  
 Affiliation: College of Professional and Continued Education
 
-This repository contains the arXiv-style paper source and the supplementary testing program for peer review.
+This repository contains the paper source and the supplementary testing program for peer review.
 
 ## What this project tests
 
@@ -20,9 +22,9 @@ The current artifact is a CPU reference simulator. It is not an optimized servin
 ## Files
 
 ```text
-paper.tex                         arXiv-style LaTeX source
+paper.tex                         LaTeX source
 references.bib                    bibliography
-LAMP_KV_arxiv.pdf                 compiled PDF
+LAMP_KV_researchgate.pdf          compiled PDF
 scripts/lamp_kv_policy_test.py    main testing program
 scripts/run_matrix_windows.bat    Windows pressure sweep runner
 scripts/summarize_results.py      summarize JSON outputs to CSV
@@ -148,7 +150,7 @@ This artifact cannot by itself prove:
 
 For stronger evaluation, use real KV tensors and integrate the policy into an LLM runtime.
 
-## Recommended GitHub upload
+## Recommended repository upload
 
 Upload the following to `https://github.com/johncheungmk/LAMP-KV`:
 
@@ -156,7 +158,7 @@ Upload the following to `https://github.com/johncheungmk/LAMP-KV`:
 README.md
 paper.tex
 references.bib
-LAMP_KV_arxiv.pdf
+LAMP_KV_researchgate.pdf
 scripts/lamp_kv_policy_test.py
 scripts/run_matrix_windows.bat
 scripts/summarize_results.py
