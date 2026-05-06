@@ -1,6 +1,6 @@
 # Pilot results
 
-These are the pilot results incorporated into the arXiv-style paper.
+These are the pilot results incorporated into the paper.
 
 Platform reported by the script:
 
