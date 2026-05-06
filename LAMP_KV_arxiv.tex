@@ -1,0 +1,248 @@
+\documentclass[11pt]{article}
+
+\usepackage[a4paper,margin=1in]{geometry}
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{amsmath,amssymb}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{graphicx}
+\usepackage{xcolor}
+\usepackage{url}
+\usepackage{hyperref}
+\usepackage{listings}
+\usepackage{enumitem}
+\usepackage{microtype}
+\usepackage{authblk}
+
+\hypersetup{colorlinks=true, linkcolor=blue, citecolor=blue, urlcolor=blue}
+\lstset{basicstyle=\ttfamily\small, breaklines=true, columns=fullflexible, frame=single}
+\setlist[itemize]{leftmargin=*}
+\setlist[enumerate]{leftmargin=*}
+
+\title{LAMP-KV: Memory-Pressure-Aware Mixed-Precision KV-Cache Compression for Memory-Constrained LLM Inference}
+\author{John Cheung}
+\affil{College of Professional and Continued Education}
+\date{May 2026}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+Long-context large language model (LLM) inference is increasingly constrained by key-value (KV) cache memory. Prior work has already established several important directions, including paged KV-cache management, low-bit KV quantization, quality-adaptive KV quantization, and token selection or eviction. Therefore, a new academic contribution should not simply repeat fixed INT4 or INT2 KV-cache quantization. This paper proposes \emph{LAMP-KV}, a memory-pressure-aware mixed-precision policy that selects KV-cache precision at block granularity. The core idea is to treat the quantizer as a set of available actions and to study the runtime policy problem: when should a system use INT8, INT4, INT3, INT2, or FP16 fallback under changing memory pressure? We provide an arXiv-style preprint and a reproducible Python artifact for Windows and Linux. A pilot test on a Lenovo Yoga Slim 7 14Q8X9 Windows ARM notebook with LPDDR5X memory shows that fixed INT8, INT4, INT3, and INT2 achieve 1.95$\times$, 3.82$\times$, 5.02$\times$, and 7.31$\times$ compression, respectively, on a synthetic KV-cache tensor. At medium pressure, LAMP-KV selects a mixed INT4/INT8 policy, achieving 3.01$\times$ compression while reducing mean absolute error from 0.1043 under fixed INT4 to 0.0738. These results support the feasibility of pressure-aware bit allocation as a research direction, while real-model KV traces and end-to-end LLM quality evaluation remain required before deployment claims.
+\end{abstract}
+
+\noindent\textbf{Keywords:} large language model inference; KV cache; quantization; mixed precision; memory pressure; long context; on-device inference.
+
+\section{Introduction}
+Autoregressive LLM inference stores key and value activations from previous tokens so that each subsequent decoding step can attend over the existing context without recomputing the entire prefix. This KV cache is essential for efficient generation, but its memory footprint grows linearly with sequence length, batch size, number of layers, number of heads, and head dimension. For long-context and batched inference, KV-cache memory can become a practical bottleneck even when model weights fit in memory.
+
+Strong baselines already exist. PagedAttention and vLLM reduce KV-cache waste through block-level memory management and sharing \cite{kwon2023pagedattention}. KIVI proposes tuning-free asymmetric 2-bit KV quantization with per-channel key quantization and per-token value quantization \cite{liu2024kivi}. KVQuant studies sub-4-bit KV-cache quantization with techniques such as pre-RoPE key quantization, non-uniform datatypes, and outlier handling \cite{hooper2024kvquant}. QAQ proposes quality-adaptive KV-cache quantization with outlier-aware and attention-aware handling \cite{dong2024qaq}. H$_2$O and SnapKV reduce KV storage by retaining or selecting important tokens rather than storing all positions at full cost \cite{zhang2023h2o,li2024snapkv}. Recent work has also begun to investigate adaptive bit allocation for on-device LLMs \cite{boroujeni2026dontwastebits}. These results mean that plain KV-cache quantization is not a sufficient novelty claim.
+
+This paper therefore narrows the research question. Rather than claiming to invent KV quantization, we ask whether a simple, reproducible, device-aware policy can provide useful intermediate operating points between fixed-bit baselines. The proposed policy, LAMP-KV, receives a memory-pressure signal and chooses precision per KV block. At low memory pressure, it should behave conservatively. At high pressure, it should become more aggressive. At medium pressure, it should mix precisions and preserve high precision for blocks that appear more sensitive to quantization.
+
+\subsection{Motivation from an Earlier Negative Result}
+The work began with a DASH/ASP-QADD-style block-local delta-coding prototype for static model blocks. A Windows notebook run on a $4096\times4096$ synthetic matrix with block size 128 and 3-bit residuals reduced storage from 33,554,432 bytes to 7,340,032 bytes, corresponding to 4.57$\times$ compression relative to FP16 and 1.21$\times$ relative to an INT4-like baseline. However, the pure Python/NumPy reference required approximately 21.2 seconds for encoding and 21.1 seconds for decoding. This demonstrated compression potential but weak practical inference value. LAMP-KV is motivated by this result: byte savings alone are insufficient unless the policy targets an actual runtime memory bottleneck and can fall back to simple, established representations.
+
+\subsection{Contributions}
+This paper makes the following contributions:
+\begin{enumerate}
+    \item It reformulates the research objective away from custom static weight-block delta coding and toward adaptive KV-cache precision selection.
+    \item It proposes LAMP-KV, a memory-pressure-aware mixed-precision policy that chooses among INT2, INT3, INT4, INT8, and FP16 fallback at KV-block granularity.
+    \item It provides a reproducible Python artifact designed for peer review and GitHub upload, supporting synthetic KV tensors and optional real KV tensors in NPZ format.
+    \item It reports pilot Windows/LPDDR5X notebook results showing that the adaptive policy provides a middle point between fixed INT8 and fixed INT4: 3.01$\times$ compression at medium pressure with lower reconstruction error than fixed INT4.
+\end{enumerate}
+
+\section{Background and Related Work}
+\subsection{KV-Cache Memory Growth}
+For a decoder-only transformer, approximate FP16 KV-cache memory is
+\begin{equation}
+    M_{KV} = 2 \cdot B \cdot S \cdot L \cdot H \cdot D \cdot 2 \quad \text{bytes},
+\end{equation}
+where $B$ is batch size, $S$ is sequence length, $L$ is number of layers, $H$ is number of heads, $D$ is head dimension, the leading factor of 2 accounts for keys and values, and the final factor of 2 is the byte width of FP16. This expression explains why long-context and batched inference rapidly increase memory consumption.
+
+\subsection{Paged KV Management}
+vLLM's PagedAttention uses a paging-inspired KV-cache abstraction and supports flexible sharing across requests \cite{kwon2023pagedattention}. This work is complementary to LAMP-KV. PagedAttention improves allocation and reduces fragmentation, while LAMP-KV studies how many bits should be used inside retained KV blocks.
+
+\subsection{KV Quantization}
+KIVI observes that key and value caches have different distributional behavior and proposes asymmetric 2-bit quantization: keys are quantized per channel and values per token \cite{liu2024kivi}. KVQuant further targets sub-4-bit KV quantization with outlier-aware and non-uniform representations \cite{hooper2024kvquant}. QAQ proposes quality-adaptive KV quantization and highlights that key and value caches can require different treatment \cite{dong2024qaq}. LAMP-KV adopts the KIVI-style axis convention in its reference simulator but treats it as a baseline design choice, not as a novelty claim.
+
+\subsection{KV Eviction and Token Selection}
+H$_2$O observes that a subset of heavy-hitter tokens contributes disproportionately to attention and designs a KV eviction policy around this observation \cite{zhang2023h2o}. SnapKV selects clustered important positions using an observation window near the end of the prompt \cite{li2024snapkv}. These methods reduce the number of stored tokens. LAMP-KV instead changes precision for stored blocks. The two families are potentially composable.
+
+\subsection{Adaptive Precision}
+Recent adaptive KV-cache work confirms that fixed global precision may waste bits on low-impact states while over-compressing important states \cite{boroujeni2026dontwastebits}. This makes the novelty boundary important. LAMP-KV does not claim that adaptive precision is untouched. Its narrower contribution is a memory-pressure-aware, block-level, reproducible policy artifact intended for early-stage evaluation on commodity memory-constrained systems.
+
+\section{LAMP-KV Policy}
+\subsection{Block Representation}
+The simulator flattens key and value tensors into matrices of shape $[T,D]$, where $T=B\cdot S\cdot L\cdot H$ and $D$ is head dimension. The token dimension is partitioned into blocks of $N$ rows. Key blocks use per-channel scaling, and value blocks use per-token scaling. This follows the convention used by KIVI-style quantization but allows LAMP-KV to focus on policy selection.
+
+For bit width $b$, symmetric quantization is defined as
+\begin{equation}
+    q = \mathrm{clip}\left(\mathrm{round}(x/s), -2^{b-1}, 2^{b-1}-1\right),
+\end{equation}
+with dequantized reconstruction
+\begin{equation}
+    \hat{x} = q\cdot s.
+\end{equation}
+The estimated storage includes packed quantized values and FP16 scale overhead. Scale overhead is reported explicitly because small blocks can lose much of their compression benefit to metadata.
+
+\subsection{Memory-Pressure Signal}
+The policy receives a scalar pressure value $p\in[0,1]$. A value of 0 means memory is comfortable, and a value of 1 means memory pressure is high. In a full runtime, this signal could come from available memory, KV-cache occupancy, request queue pressure, or operating-system memory feedback. In the artifact, it is supplied manually to make the sweep reproducible.
+
+\subsection{Block Importance Proxy}
+Because the simulator does not run a real attention kernel, it estimates block sensitivity with a simple reproducible proxy:
+\begin{equation}
+    I(x) = \mathrm{mean}(x^2) + 0.1\cdot P_{99}(|x|).
+\end{equation}
+This proxy favors blocks with high energy or heavy tails. A full implementation should replace it with a better estimator, such as attention mass, layer sensitivity, calibration loss, or output-token divergence.
+
+\subsection{Threshold Adjustment}
+Given base thresholds $\tau_{mean}$ and $\tau_{max}$, LAMP-KV computes pressure-adjusted and importance-adjusted thresholds. Higher pressure relaxes thresholds, while higher estimated importance tightens them. In the reference implementation, the pressure factor is
+\begin{equation}
+    f_p = 0.75 + 1.25p.
+\end{equation}
+The importance factor is clipped to avoid extreme behavior. Each block is then tested against mean absolute error and maximum absolute error thresholds.
+
+\subsection{Precision Selection}
+For each block, the policy tries INT2, INT3, INT4, and INT8 in ascending storage cost order. It selects the first precision satisfying both mean and maximum error constraints. If none satisfies the constraints, it falls back to FP16. The policy is intentionally simple: it is meant to be auditable and reproducible before being replaced by a learned or calibration-based controller.
+
+\section{Experimental Setup}
+\subsection{Artifact}
+The artifact contains:
+\begin{itemize}
+    \item \texttt{paper.tex}: arXiv-style LaTeX source;
+    \item \texttt{references.bib}: bibliography;
+    \item \texttt{scripts/lamp\_kv\_policy\_test.py}: main simulator;
+    \item \texttt{scripts/run\_matrix\_windows.bat}: Windows experiment runner;
+    \item \texttt{scripts/summarize\_results.py}: JSON-to-CSV summary helper;
+    \item \texttt{README.md}: usage instructions for GitHub peer review.
+\end{itemize}
+
+\subsection{Pilot Platform}
+The pilot results were produced on a Windows 11 notebook with Python 3.13.5, NumPy 2.4.4, and a Qualcomm ARMv8 64-bit processor. The platform is a Lenovo Yoga Slim 7 14Q8X9-class notebook using LPDDR5X memory. These results should be interpreted as notebook portability and memory/error policy results, not as server DDR5 or GPU serving measurements.
+
+\subsection{Synthetic KV Tensor}
+The main pressure sweep uses a synthetic KV tensor with
+\begin{equation}
+    B=1,\quad S=1024,\quad L=32,\quad H=32,\quad D=128.
+\end{equation}
+The resulting number of entries per cache is 134,217,728, and the combined FP16 key/value cache is 536,870,912 bytes. The synthetic distribution is Gaussian with sparse outliers controlled by an outlier probability of 0.001 and outlier scale 6.0.
+
+\subsection{Baselines and Metrics}
+The baselines are fixed INT8, INT4, INT3, and INT2, using the same scale-axis convention as the adaptive policy. Metrics are compression ratio relative to FP16, estimated bytes including scale metadata, mean absolute error, 95th-percentile block MAE, mean 95th-percentile element error, maximum error, and bit-allocation histogram.
+
+\section{Pilot Results}
+\subsection{Fixed-Precision Baselines}
+Table~\ref{tab:fixed} reports the fixed-bit results for sequence length 1024. Lower precision improves compression but increases reconstruction error.
+
+\begin{table}[h]
+\centering
+\caption{Fixed-precision results for synthetic KV cache, $S=1024$. Bytes include scale metadata.}
+\label{tab:fixed}
+\begin{tabular}{lrrrr}
+\toprule
+Method & Bytes & Compression & Mean MAE & Max error \\
+\midrule
+INT8 & 274,726,912 & 1.95$\times$ & 0.00575 & 0.111 \\
+INT4 & 140,509,184 & 3.82$\times$ & 0.10434 & 2.008 \\
+INT3 & 106,954,752 & 5.02$\times$ & 0.24029 & 4.230 \\
+INT2 & 73,400,320 & 7.31$\times$ & 0.63448 & 10.148 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Pressure Sweep}
+Table~\ref{tab:adaptive} shows the adaptive policy under pressure values 0.0, 0.5, and 1.0. The policy behaves as intended. At pressure 0.0, it is conservative and selects only INT8. At pressure 0.5, it mixes INT4 and INT8. At pressure 1.0, it nearly converges to fixed INT4.
+
+\begin{table}[h]
+\centering
+\caption{LAMP-KV adaptive policy results, $S=1024$.}
+\label{tab:adaptive}
+\begin{tabular}{lrrrrr}
+\toprule
+Pressure & Bytes & Compression & Mean MAE & INT4 blocks & INT8 blocks \\
+\midrule
+0.0 & 274,726,912 & 1.95$\times$ & 0.00575 & 0 & 32,768 \\
+0.5 & 178,085,888 & 3.01$\times$ & 0.07376 & 23,594 & 9,174 \\
+1.0 & 140,517,376 & 3.82$\times$ & 0.10433 & 32,766 & 2 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The most useful operating point is pressure 0.5. Compared with fixed INT8, it improves compression from 1.95$\times$ to 3.01$\times$. Compared with fixed INT4, it reduces mean absolute error from 0.10434 to 0.07376 and lowers maximum error from 2.008 to 1.365, at the cost of lower compression than fixed INT4. This supports the policy claim: adaptive mixed precision can expose intermediate memory/error tradeoffs that fixed global precision cannot.
+
+\subsection{Sequence-Length 512 Smoke Test}
+A lighter smoke test with sequence length 512 produced the same qualitative behavior. At pressure 0.5, the adaptive policy selected 11,785 INT4 blocks and 4,599 INT8 blocks, achieved 3.01$\times$ compression, and reported mean absolute error 0.07368. This is useful for reviewer machines with limited memory.
+
+\subsection{Interpretation}
+The result should be interpreted carefully. It shows that LAMP-KV can implement a memory-pressure-controlled precision transition from INT8-like behavior to INT4-like behavior. It does not yet prove real model quality preservation, token-level agreement, or serving latency improvement. These require real KV tensors and integration into an LLM runtime.
+
+\section{Reproducibility Instructions}
+On Windows, install NumPy:
+\begin{lstlisting}[language=bash]
+python -m pip install numpy
+\end{lstlisting}
+Run the light test:
+\begin{lstlisting}[language=bash]
+python scripts/lamp_kv_policy_test.py --batch 1 --seq-len 512 \
+  --layers 32 --heads 32 --head-dim 128 --block-tokens 64 \
+  --pressure 0.5 --seed 7
+\end{lstlisting}
+Run the pressure sweep:
+\begin{lstlisting}[language=bash]
+python scripts/lamp_kv_policy_test.py --pressure 0.0 --seq-len 1024 --seed 7
+python scripts/lamp_kv_policy_test.py --pressure 0.5 --seq-len 1024 --seed 7
+python scripts/lamp_kv_policy_test.py --pressure 1.0 --seq-len 1024 --seed 7
+\end{lstlisting}
+Use \texttt{--out results/name.json} to save individual results. Use \texttt{scripts/summarize\_results.py} to convert saved JSON files to CSV. The README in the artifact contains exact Windows commands and GitHub-oriented instructions.
+
+\section{Limitations and Threats to Validity}
+\textbf{Synthetic data.} The pilot results use synthetic KV tensors. Real KV tensors may have different distributions, outlier behavior, layer sensitivity, and attention sensitivity.
+
+\textbf{Proxy metrics.} Mean absolute error and maximum error are not language-quality metrics. They are early-stage filters. A full paper revision should include perplexity, token agreement, and downstream task accuracy.
+
+\textbf{Python performance.} The simulator is a reference implementation. Its wall-clock time should not be used as serving latency.
+
+\textbf{Overlap with prior work.} KV-cache quantization, quality-adaptive quantization, and adaptive bit allocation are active areas. The contribution here is a constrained, pressure-aware policy artifact and pilot evaluation, not a claim that adaptive KV compression is entirely new.
+
+\textbf{Hardware.} The notebook platform uses LPDDR5X memory and an ARM processor. It is relevant for on-device and memory-constrained testing, but does not validate DDR5 server behavior or GPU kernel performance.
+
+\section{Future Work}
+The next step is to capture real KV tensors from open-source LLMs and run the same policy on real activations. After that, the policy should be integrated into an inference runtime to measure perplexity, deterministic token agreement, TTFT, TPOT, tokens/s, p95/p99 latency, and memory footprint. The current block-importance proxy should be replaced or compared with attention-mass, calibration-loss, and layer-sensitive estimators. Finally, LAMP-KV should be compared against fixed KIVI-style quantization, KVQuant-style outlier-aware quantization, QAQ-style quality adaptation, and adaptive bit-allocation baselines.
+
+\section{Conclusion}
+LAMP-KV studies a practical policy question for memory-constrained LLM inference: how aggressively should the KV cache be quantized under changing memory pressure? The pilot results show that a simple block-level policy can smoothly transition from conservative INT8 behavior to aggressive INT4 behavior and produce useful intermediate memory/error tradeoffs. The work is not a replacement for established KV quantization methods; rather, it is a policy layer and reproducible artifact for studying adaptive precision selection. The accompanying scripts and README are intended for GitHub-based peer review and future extension to real KV tensors and end-to-end LLM evaluation.
+
+
+\begin{thebibliography}{10}
+\bibitem{kwon2023pagedattention}
+W. Kwon, Z. Li, S. Zhuang, Y. Sheng, L. Zheng, C. H. Yu, J. E. Gonzalez, H. Zhang, and I. Stoica, ``Efficient Memory Management for Large Language Model Serving with PagedAttention,'' in \emph{Proceedings of the 29th ACM Symposium on Operating Systems Principles}, 2023.
+
+\bibitem{liu2024kivi}
+Z. Liu, J. Yuan, H. Jin, S. Zhong, Z. Xu, V. Braverman, B. Chen, and X. Hu, ``KIVI: A Tuning-Free Asymmetric 2bit Quantization for KV Cache,'' in \emph{Proceedings of the 41st International Conference on Machine Learning}, 2024.
+
+\bibitem{hooper2024kvquant}
+C. Hooper, S. Kim, H. Mohammadzadeh, M. W. Mahoney, Y. S. Shao, K. Keutzer, and A. Gholami, ``KVQuant: Towards 10 Million Context Length LLM Inference with KV Cache Quantization,'' in \emph{Advances in Neural Information Processing Systems}, 2024.
+
+\bibitem{dong2024qaq}
+S. Dong, W. Cheng, J. Qin, and W. Wang, ``QAQ: Quality Adaptive Quantization for LLM KV Cache,'' arXiv preprint arXiv:2403.04643, 2024.
+
+\bibitem{zhang2023h2o}
+Z. Zhang et al., ``H$_2$O: Heavy-Hitter Oracle for Efficient Generative Inference of Large Language Models,'' in \emph{Advances in Neural Information Processing Systems}, 2023.
+
+\bibitem{li2024snapkv}
+Y. Li, Y. Huang, B. Yang, B. Venkitesh, A. Locatelli, H. Ye, T. Cai, P. Lewis, and D. Chen, ``SnapKV: LLM Knows What You are Looking for Before Generation,'' in \emph{Advances in Neural Information Processing Systems}, 2024.
+
+\bibitem{boroujeni2026dontwastebits}
+S. P. H. Boroujeni, N. Mehrabi, P. Woods, G. Hillesheim, and A. Razi, ``Don't Waste Bits! Adaptive KV-Cache Quantization for Lightweight On-Device LLMs,'' arXiv preprint arXiv:2604.04722, 2026.
+
+\bibitem{dao2022flashattention}
+T. Dao, D. Y. Fu, S. Ermon, A. Rudra, and C. R\'e, ``FlashAttention: Fast and Memory-Efficient Exact Attention with IO-Awareness,'' in \emph{Advances in Neural Information Processing Systems}, 2022.
+
+\bibitem{sheng2023flexgen}
+Y. Sheng et al., ``FlexGen: High-Throughput Generative Inference of Large Language Models with a Single GPU,'' in \emph{Proceedings of Machine Learning and Systems}, 2023.
+\end{thebibliography}
+
+
+\end{document}

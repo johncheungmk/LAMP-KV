@@ -1,0 +1,130 @@
+{
+  "system": {
+    "python": "3.13.5",
+    "numpy": "2.3.5",
+    "platform": "Linux-4.4.0-x86_64-with-glibc2.41",
+    "processor": ""
+  },
+  "config": {
+    "batch": 1,
+    "seq_len": 16,
+    "layers": 2,
+    "heads": 2,
+    "head_dim": 8,
+    "block_tokens": 4,
+    "pressure": 0.5,
+    "base_mae": 0.08,
+    "base_max": 1.0,
+    "outlier_prob": 0.001,
+    "outlier_scale": 6.0,
+    "seed": 7,
+    "npz": "",
+    "out": "results/smoke_small.json"
+  },
+  "source": {
+    "source": "synthetic",
+    "shape": [
+      1,
+      16,
+      2,
+      2,
+      8
+    ],
+    "outlier_prob": 0.001,
+    "outlier_scale": 6.0
+  },
+  "tokens_total": 64,
+  "head_dim": 8,
+  "num_blocks_per_cache": 16,
+  "fp16_kv_bytes": 2048,
+  "fixed": {
+    "int8": {
+      "bytes": 1408,
+      "compression_ratio_vs_fp16": 1.4545454545454546,
+      "mean_mae": 0.0024922350894485135,
+      "p95_mae": 0.003597373398952186,
+      "mean_p95_error": 0.00633340266358573,
+      "max_error": 0.012403130531311035,
+      "scale_overhead_bytes": 384,
+      "bit_histogram": {
+        "2": 0,
+        "3": 0,
+        "4": 0,
+        "8": 32,
+        "16": 0
+      }
+    },
+    "int4": {
+      "bytes": 896,
+      "compression_ratio_vs_fp16": 2.2857142857142856,
+      "mean_mae": 0.04700333601795137,
+      "p95_mae": 0.06332106180489064,
+      "mean_p95_error": 0.1143370799254626,
+      "max_error": 0.19698667526245117,
+      "scale_overhead_bytes": 384,
+      "bit_histogram": {
+        "2": 0,
+        "3": 0,
+        "4": 32,
+        "8": 0,
+        "16": 0
+      }
+    },
+    "int3": {
+      "bytes": 768,
+      "compression_ratio_vs_fp16": 2.6666666666666665,
+      "mean_mae": 0.10727298515848815,
+      "p95_mae": 0.1582616999745369,
+      "mean_p95_error": 0.26533193653449416,
+      "max_error": 0.6806640625,
+      "scale_overhead_bytes": 384,
+      "bit_histogram": {
+        "2": 0,
+        "3": 32,
+        "4": 0,
+        "8": 0,
+        "16": 0
+      }
+    },
+    "int2": {
+      "bytes": 640,
+      "compression_ratio_vs_fp16": 3.2,
+      "mean_mae": 0.31069108098745346,
+      "p95_mae": 0.44373662471771236,
+      "mean_p95_error": 0.795407023280859,
+      "max_error": 1.3857421875,
+      "scale_overhead_bytes": 384,
+      "bit_histogram": {
+        "2": 32,
+        "3": 0,
+        "4": 0,
+        "8": 0,
+        "16": 0
+      }
+    }
+  },
+  "adaptive": {
+    "bytes": 824,
+    "compression_ratio_vs_fp16": 2.4854368932038833,
+    "mean_mae": 0.0728627877542749,
+    "p95_mae": 0.10248051360249519,
+    "mean_p95_error": 0.1834223405458033,
+    "max_error": 0.40625,
+    "scale_overhead_bytes": 384,
+    "bit_histogram": {
+      "2": 0,
+      "3": 18,
+      "4": 14,
+      "8": 0,
+      "16": 0
+    },
+    "mean_mae_threshold": 0.11008220380689845,
+    "mean_max_threshold": 1.3760275475862307
+  },
+  "timing_ms": {
+    "load_or_generate": 0.3763249999337859,
+    "fixed_policy_eval": 58.47377600002801,
+    "adaptive_policy_eval": 10.884940000096321,
+    "total": 81.86902200009172
+  }
+}
